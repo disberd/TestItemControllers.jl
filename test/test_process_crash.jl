@@ -188,6 +188,26 @@ end
     @test length(terminated) == 1
 end
 
+@testitem "A Julia command that cannot be spawned errors all test items" setup=[TestHelpers] begin
+    pkg_path = joinpath(TestHelpers.TESTDATA_DIR, "BasicPackage")
+    discovered = TestHelpers.discover_test_items(pkg_path)
+    items = filter(i -> i.label in ("add works", "greet works"), discovered.items)
+    @test length(items) == 2
+
+    julia_cmd = joinpath(pkg_path, "nonexistent", "julia")
+
+    # At shutdown, the controller waits up to 30 s for a test process that it did not
+    # remove. A `shutdown_timeout` below that makes such a process fail the test.
+    result = TestHelpers.run_testrun(items, discovered.setups, discovered; julia_cmd, max_procs=2, timeout=60, shutdown_timeout=10)
+
+    errored = filter(e -> e.event == :errored, result.events)
+    @test sort([e.testitem_id for e in errored]) == sort([i.id for i in items])
+
+    created = [e.id for e in result.process_events if e.event == :process_created]
+    terminated = [e.id for e in result.process_events if e.event == :process_terminated]
+    @test sort(terminated) == sort(created)
+end
+
 @testitem "The startup-crash warning only reads fields the exception has" begin
     using TestItemControllers: TestProcessCrashException
 

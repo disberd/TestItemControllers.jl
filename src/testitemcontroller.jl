@@ -2618,6 +2618,10 @@ function _launch_julia_process!(c::TestItemController, ps::TestProcessState)
               julia_version, launch_token)
     catch err
         @error "Error in test process IO" testprocess_id=ps.id exception=(err, catch_backtrace())
+        # `start` sends no message to the reactor for an error that occurs before its own
+        # error handler, for example when it cannot spawn `juliaCmd`. Without this message,
+        # the process stays in ProcessStarting and its test run does not complete.
+        try put!(c.reactor_channel, TestProcessIOErrorMsg(ps.id, :fatal)) catch end
     end
     push!(ps.process_tasks, t)
 end

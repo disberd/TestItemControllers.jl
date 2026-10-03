@@ -223,6 +223,43 @@ end
     @test sort(terminated) == sort(created)
 end
 
+@testitem "A Julia command with arguments in it points the user at juliaArgs" setup=[TestHelpers] begin
+    pkg_path = joinpath(TestHelpers.TESTDATA_DIR, "BasicPackage")
+    discovered = TestHelpers.discover_test_items(pkg_path)
+    items = filter(i -> i.label == "add works", discovered.items)
+    @test length(items) == 1
+
+    # The controller runs the whole string as one program, so a juliaup channel written into
+    # `juliaCmd` cannot be spawned.
+    result = TestHelpers.run_testrun(items, discovered.setups, discovered; julia_cmd="julia +1.12", timeout=60, shutdown_timeout=10)
+
+    errored = filter(e -> e.event == :errored, result.events)
+    @test length(errored) == 1
+    @test !isempty(errored) && any(errored[1].messages) do m
+        occursin("Could not start the test process", m.message) && occursin("`juliaArgs`", m.message)
+    end
+end
+
+@testitem "A Julia process that exits during startup errors its test items as crashed" setup=[TestHelpers] begin
+    pkg_path = joinpath(TestHelpers.TESTDATA_DIR, "BasicPackage")
+    discovered = TestHelpers.discover_test_items(pkg_path)
+    items = filter(i -> i.label == "add works", discovered.items)
+    @test length(items) == 1
+
+    # Julia rejects the unknown option and exits before it connects to the controller. The
+    # process was spawned, so this is a crash and not a failure to start it.
+    result = TestHelpers.run_testrun(items, discovered.setups, discovered; julia_args=["--no-such-option"], timeout=120, shutdown_timeout=10)
+
+    errored = filter(e -> e.event == :errored, result.events)
+    @test length(errored) == 1
+    @test !isempty(errored) && any(m -> occursin("Test process crashed before running test item", m.message), errored[1].messages)
+    @test !isempty(errored) && !any(m -> occursin("Could not start the test process", m.message), errored[1].messages)
+
+    created = [e.id for e in result.process_events if e.event == :process_created]
+    terminated = [e.id for e in result.process_events if e.event == :process_terminated]
+    @test sort(terminated) == sort(created)
+end
+
 @testitem "The controller runs test items again after a Julia command could not be spawned" setup=[TestHelpers] begin
     using TestItemControllers: TestItemController, TestRunItem, execute_testrun, shutdown, ControllerCallbacks
     import UUIDs

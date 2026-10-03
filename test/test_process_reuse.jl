@@ -168,6 +168,64 @@ end
     TestHelpers.timed_wait(controller_task, 600; label="restart-hash-change-controller")
 end
 
+@testitem "Process restart on env hash change reports the old process as terminated" setup=[TestHelpers] begin
+    # A consumer can keep its own list of test processes: it adds an id on
+    # `on_process_created` and removes the id on `on_process_terminated`. A restart
+    # replaces the process, so the controller must report the old id as terminated.
+    using TestItemControllers: TestItemController, TestRunItem, execute_testrun, shutdown, ControllerCallbacks
+    import UUIDs
+
+    pkg_path = joinpath(TestHelpers.TESTDATA_DIR, "BasicPackage")
+    discovered = TestHelpers.discover_test_items(pkg_path)
+    passing_items = filter(i -> i.label == "add works", discovered.items)
+
+    created_ids = String[]
+    terminated_ids = String[]
+    ids_lock = ReentrantLock()
+
+    callbacks = ControllerCallbacks(
+        on_testitem_started = (run_id, item_id, test_env_id) -> nothing,
+        on_testitem_passed = (run_id, item_id, test_env_id, duration) -> nothing,
+        on_testitem_failed = (run_id, item_id, test_env_id, messages, duration) -> nothing,
+        on_testitem_errored = (run_id, item_id, test_env_id, messages, duration) -> nothing,
+        on_testitem_skipped = (run_id, item_id, test_env_id) -> nothing,
+        on_append_output = (run_id, item_id, test_env_id, output) -> nothing,
+        on_attach_debugger = (run_id, pipe_name) -> nothing,
+        on_process_created = (id, test_env_id) -> lock(ids_lock) do
+            push!(created_ids, id)
+        end,
+        on_process_terminated = id -> lock(ids_lock) do
+            push!(terminated_ids, id)
+        end,
+    )
+
+    controller = TestItemController(callbacks; log_level=:Debug)
+
+    controller_task = @async try
+        run(controller)
+    catch err
+        @error "Controller error" exception=(err, catch_backtrace())
+    end
+
+    # The second run has a different env hash, so it replaces the process of the first run.
+    env_kwargs = TestHelpers._env_kwargs(discovered)
+    for env_content_hash in ("hash-A", "hash-B")
+        test_env = TestHelpers.make_test_environment(; env_kwargs..., env_content_hash)
+        work_units = [TestRunItem(item.id, test_env.id, nothing, :Debug) for item in passing_items]
+        execute_testrun(controller, string(UUIDs.uuid4()), [test_env], passing_items, work_units, discovered.setups, 1, nothing)
+    end
+
+    shutdown(controller)
+    TestHelpers.timed_wait(controller_task, 600; label="restart-reports-terminated-controller")
+
+    created, terminated = lock(ids_lock) do
+        copy(created_ids), copy(terminated_ids)
+    end
+    @test length(created) == 2
+    # After shutdown, the controller reports each process as terminated one time.
+    @test sort(terminated) == sort(created)
+end
+
 @testitem "Multiple consecutive restarts succeed" setup=[TestHelpers] begin
     # Regression test: pipe cleanup must work across many restart cycles,
     # not just the first one.

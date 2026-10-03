@@ -2579,6 +2579,11 @@ function _replace_process_state!(
 
     delete!(c.test_processes, old_id)
 
+    # The later TestProcessTerminatedMsg of the old process finds no entry, so report it here.
+    if c.callbacks.on_process_terminated !== nothing
+        c.callbacks.on_process_terminated(old_id)
+    end
+
     return new_ps, old_id
 end
 
